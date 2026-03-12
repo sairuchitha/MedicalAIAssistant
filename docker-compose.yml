@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: vision-ai-postgres
+    environment:
+      POSTGRES_DB: vision_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - vision_ai_pg:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend
+    container_name: vision-ai-backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - postgres
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: vision-ai-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  vision_ai_pg:
