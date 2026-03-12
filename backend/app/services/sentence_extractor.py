@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Dict
 
 import numpy as np
 import torch
@@ -8,8 +8,11 @@ from transformers import AutoModel, AutoTokenizer
 
 from app.config import settings
 
+DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+
 tokenizer = AutoTokenizer.from_pretrained(settings.BIOCLINICALBERT_MODEL)
 model = AutoModel.from_pretrained(settings.BIOCLINICALBERT_MODEL)
+model = model.to(DEVICE)
 model.eval()
 
 ALWAYS_KEEP_PATTERNS = [
@@ -43,6 +46,7 @@ def embed_sentences(sentences: List[str], batch_size: int = 16) -> np.ndarray:
         for i in range(0, len(sentences), batch_size):
             batch = sentences[i:i + batch_size]
             inputs = tokenizer(batch, padding=True, truncation=True, max_length=256, return_tensors="pt")
+            inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
             outputs = model(**inputs)
             pooled = mean_pool(outputs.last_hidden_state, inputs["attention_mask"])
             all_embeds.append(pooled.cpu().numpy())
@@ -54,18 +58,38 @@ def is_always_keep(sentence: str) -> bool:
     return any(re.search(p, s) for p in ALWAYS_KEEP_PATTERNS)
 
 
-def extract_relevant_sentences(notes: List[str], limit: int = 150) -> List[str]:
-    all_sentences: List[str] = []
+def extract_relevant_sentences(notes: List[Dict], limit: int = 150) -> List[Dict]:
+    """
+    Accept a list of note dicts: {masked_text, row_id, chart_date, category, description}
+    Return a list of sentence dicts: {sentence, note_id, note_date, note_type}
+    preserving source provenance for citation generation.
+    """
+    all_items = []  # list of (sentence_text, note_id, note_date, note_type)
     for note in notes:
-        all_sentences.extend(split_sentences(note))
-    if not all_sentences:
+        text = note.get("masked_text", "")
+        note_id = note.get("row_id", "")
+        note_date = note.get("chart_date", "")
+        note_type = note.get("category", "")
+        for sent in split_sentences(text):
+            all_items.append((sent, note_id, note_date, note_type))
+
+    if not all_items:
         return []
-    embeddings = embed_sentences(all_sentences)
+
+    sentences = [item[0] for item in all_items]
+    embeddings = embed_sentences(sentences)
     centroid = embeddings.mean(axis=0, keepdims=True)
     scores = cosine_similarity(embeddings, centroid).flatten()
     threshold = 0.60 * scores.max()
+
     selected = []
-    for sent, score in zip(all_sentences, scores):
+    for (sent, note_id, note_date, note_type), score in zip(all_items, scores):
         if is_always_keep(sent) or score >= threshold:
-            selected.append(sent)
+            selected.append({
+                "sentence": sent,
+                "note_id": note_id,
+                "note_date": note_date,
+                "note_type": note_type,
+            })
+
     return selected[:limit]

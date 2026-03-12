@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchPatients, fetchSummary, askQuestion } from "./api";
 
 export default function App() {
@@ -12,6 +12,7 @@ export default function App() {
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [loadingQa, setLoadingQa] = useState(false);
+  const summaryAbortRef = useRef(null);
 
   useEffect(() => {
     async function loadPatients() {
@@ -34,15 +35,24 @@ export default function App() {
   const handleGenerateSummary = async () => {
     if (!patientId) return;
 
+    // Cancel any in-flight summary request
+    if (summaryAbortRef.current) {
+      summaryAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    summaryAbortRef.current = controller;
+
     try {
       setLoadingSummary(true);
       setError("");
       setQa(null);
+      setSummary(null);
 
-      const data = await fetchSummary(Number(patientId));
+      const data = await fetchSummary(Number(patientId), controller.signal);
       setSummary(data.summary || null);
       setWarnings(data.warnings || []);
     } catch (err) {
+      if (err.name === "AbortError") return; // cancelled — ignore
       console.error("Error generating summary:", err);
       setError("Failed to generate summary");
     } finally {

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     MEDCPT_CROSS_ENCODER: str = "ncbi/MedCPT-Cross-Encoder"
 
     OLLAMA_HOST: str = "http://localhost:11434"
-    BIOMISTRAL_MODEL: str = "cniongolo/biomistral"
+    OLLAMA_MODEL: str = "llama3.1:8b"
 
     CHUNK_TOKENS: int = 200
     CHUNK_STRIDE: int = 50

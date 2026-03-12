@@ -12,6 +12,11 @@ services:
       - "5432:5432"
     volumes:
       - vision_ai_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vision_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   backend:
     build:
@@ -19,12 +24,18 @@ services:
     container_name: vision-ai-backend
     env_file:
       - ./backend/.env
+    environment:
+      # Override localhost → Docker service name
+      POSTGRES_HOST: postgres
+      # Reach Ollama running on Mac host
+      OLLAMA_HOST: http://host.docker.internal:11434
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
+      - ./backend/data:/app/data
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   frontend:
     build:
@@ -32,9 +43,6 @@ services:
     container_name: vision-ai-frontend
     ports:
       - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     depends_on:
       - backend
 

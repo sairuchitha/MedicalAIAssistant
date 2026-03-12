@@ -7,8 +7,12 @@ from transformers import AutoModel, AutoTokenizer
 
 from app.config import settings
 
+# Use MPS on Apple Silicon if available, otherwise CPU
+DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+
 article_tokenizer = AutoTokenizer.from_pretrained(settings.MEDCPT_ARTICLE_ENCODER)
 article_model = AutoModel.from_pretrained(settings.MEDCPT_ARTICLE_ENCODER)
+article_model = article_model.to(DEVICE)
 article_model.eval()
 
 
@@ -24,9 +28,10 @@ def embed_chunks(texts: List[str], batch_size: int = 8) -> np.ndarray:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             inputs = article_tokenizer(batch, padding=True, truncation=True, max_length=256, return_tensors="pt")
+            inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
             outputs = article_model(**inputs)
             pooled = mean_pool(outputs.last_hidden_state, inputs["attention_mask"])
-            vectors.append(pooled.cpu().numpy())
+            vectors.append(pooled.cpu().numpy())  # FAISS always needs CPU numpy
     return np.vstack(vectors).astype("float32")
 
 

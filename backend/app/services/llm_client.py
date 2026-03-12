@@ -2,9 +2,9 @@ import ollama
 from app.config import settings
 
 
-def generate_with_biomistral(prompt: str) -> str:
+def generate_with_llm(prompt: str) -> str:
     response = ollama.generate(
-        model=settings.BIOMISTRAL_MODEL,
+        model=settings.OLLAMA_MODEL,
         prompt=prompt,
         options={
             "temperature": 0.2,

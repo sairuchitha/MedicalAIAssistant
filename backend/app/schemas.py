@@ -6,9 +6,17 @@ class SummaryRequest(BaseModel):
     patient_id: int = Field(..., description="Patient SUBJECT_ID")
 
 
+class SummarySource(BaseModel):
+    """Citation linking a summary back to its source note."""
+    note_id: str
+    note_date: str
+    note_type: str
+
+
 class SummaryResponse(BaseModel):
     patient_id: int
     summary: Dict[str, str]
+    citations: List[SummarySource] = []
     warnings: List[str] = []
 
 

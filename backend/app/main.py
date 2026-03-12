@@ -26,6 +26,8 @@ def ensure_directories() -> None:
 async def lifespan(app: FastAPI):
     ensure_directories()
     init_db()
+    from app.services.runtime_store import initialize_runtime
+    initialize_runtime()
     print("Startup complete")
     yield
 

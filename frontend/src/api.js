@@ -8,11 +8,12 @@ export async function fetchPatients() {
   return res.json();
 }
 
-export async function fetchSummary(patientId) {
+export async function fetchSummary(patientId, signal) {
   const res = await fetch(`${BASE_URL}/api/summary`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ patient_id: patientId }),
+    signal,
   });
   if (!res.ok) {
     throw new Error("Failed to fetch summary");

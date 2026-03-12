@@ -1,5 +1,5 @@
 from app.config import settings
-from app.services.biomistral_client import generate_with_biomistral
+from app.services.llm_client import generate_with_llm
 
 LOOKUP_KEYWORDS = ["last", "current", "most recent", "what is", "when was", "what are"]
 REASONING_KEYWORDS = ["trend", "over time", "history", "compare", "progression", "worsening", "changing"]
@@ -52,7 +52,7 @@ Retrieved Notes:
 def answer_question(question: str, retrieved_chunks):
     qtype = classify_question(question)
     prompt = build_prompt(question, retrieved_chunks, qtype)
-    answer = generate_with_biomistral(prompt)
+    answer = generate_with_llm(prompt)
     selected = retrieved_chunks[:3] if qtype == "lookup" else retrieved_chunks[:5]
     citations = [
         {

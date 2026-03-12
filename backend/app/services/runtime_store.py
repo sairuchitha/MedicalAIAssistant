@@ -1,46 +1,79 @@
+"""
+In-memory cache of per-patient notes and FAISS indexes.
+
+Loaded once at server startup from PostgreSQL (populated by scripts/preprocess.py).
+All three API endpoints read from this cache — zero CSV reads at request time.
+"""
+
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from app.services.chunker import chunk_note
-from app.services.dedup import deduplicate_notes
-from app.services.medcpt_indexer import build_faiss_index
-from app.services.mimic_loader import load_mvp_patient_notes
-from app.services.phi_masking import mask_phi
+import faiss
+import numpy as np
 
-_patient_notes: Dict[int, List[str]] = defaultdict(list)
+from app.db.postgres import FaissIndex, Note, Patient, SessionLocal
+
+# {patient_id: [{"masked_text", "row_id", "chart_date", "category", "description"}]}
+_patient_notes: Dict[int, List[dict]] = defaultdict(list)
+
+# {patient_id: (faiss_index, chunk_meta_list)}
 _patient_indexes: Dict[int, Tuple[object, List[dict]]] = {}
 
 
-def initialize_runtime(limit_patients: int = 5):
+def initialize_runtime():
+    """Load all patients, notes, and FAISS indexes from Postgres into RAM."""
     global _patient_notes, _patient_indexes
-    df = load_mvp_patient_notes(max_patients=limit_patients)
-    df = deduplicate_notes(df)
-    all_chunks_by_patient = defaultdict(list)
-    for _, row in df.iterrows():
-        pid = int(row["SUBJECT_ID"])
-        text = mask_phi(str(row["TEXT"]))
-        _patient_notes[pid].append(text)
-        chunks = chunk_note(
-            text=text,
-            patient_id=pid,
-            note_id=str(row.get("ROW_ID", "")),
-            note_date=str(row.get("CHARTDATE", "")),
-            note_type=str(row.get("CATEGORY", "")),
-        )
-        all_chunks_by_patient[pid].extend(chunks)
-    for pid, chunks in all_chunks_by_patient.items():
-        if chunks:
-            index, chunk_meta = build_faiss_index(chunks)
-            _patient_indexes[pid] = (index, chunk_meta)
+    _patient_notes = defaultdict(list)
+    _patient_indexes = {}
+
+    db = SessionLocal()
+    try:
+        patients = db.query(Patient).all()
+        if not patients:
+            print("[runtime_store] WARNING: No patients found in database. Run scripts/preprocess.py first.")
+            return
+
+        print(f"[runtime_store] Loading {len(patients)} patients from Postgres...")
+
+        for patient in patients:
+            pid = patient.subject_id
+
+            # Load masked notes with metadata
+            notes = db.query(Note).filter(Note.subject_id == pid).all()
+            for note in notes:
+                _patient_notes[pid].append({
+                    "masked_text": note.masked_text,
+                    "row_id": note.row_id or "",
+                    "chart_date": note.chart_date or "",
+                    "category": note.category or "",
+                    "description": note.description or "",
+                })
+
+            # Load and deserialize FAISS index
+            faiss_row = db.query(FaissIndex).filter(FaissIndex.subject_id == pid).first()
+            if faiss_row:
+                index_bytes = np.frombuffer(faiss_row.index_data, dtype=np.uint8)
+                index = faiss.deserialize_index(index_bytes)
+                _patient_indexes[pid] = (index, faiss_row.chunk_meta)
+                print(f"[runtime_store]   Patient {pid}: {len(notes)} notes, {len(faiss_row.chunk_meta)} chunks loaded")
+            else:
+                print(f"[runtime_store]   Patient {pid}: notes loaded but no FAISS index found")
+
+        print(f"[runtime_store] Ready. {len(_patient_notes)} patients cached.")
+
+    finally:
+        db.close()
 
 
-def get_patient_notes(patient_id: int):
+def get_patient_notes(patient_id: int) -> List[dict]:
+    """Returns list of note dicts: {masked_text, row_id, chart_date, category, description}"""
     return _patient_notes.get(patient_id, [])
 
 
-def get_patient_index(patient_id: int):
+def get_patient_index(patient_id: int) -> Optional[Tuple[object, List[dict]]]:
+    """Returns (faiss_index, chunk_meta) or None."""
     return _patient_indexes.get(patient_id)
 
 
-def get_all_patient_ids():
+def get_all_patient_ids() -> List[int]:
     return sorted(_patient_notes.keys())
