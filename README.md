@@ -25,13 +25,13 @@ Preprocessing — Section parsing, deduplication, chunking
 │  extraction (mean-pool,         Encoder → FAISS     │
 │  60% soft threshold)            per-patient index   │
 │  ↓                              ↓                   │
-│  BioMistral-7B (4-section       MedCPT Query        │
+│  LLama 3.1b (4-section       MedCPT Query        │
 │  prompting via Ollama)          Encoder + FAISS     │
 │  ↓                              ↓                   │
 │  Faithfulness verification      MedCPT Cross-Encoder│
 │  (entity-level regex check)     reranking           │
 │                                 ↓                   │
-│                                 BioMistral-7B QA    │
+│                                  LLama 3.1b QA    │
 └─────────────────────────────────────────────────────┘
 ↓
 PHI Output Filtering — Microsoft Presidio (post-model)
@@ -69,7 +69,7 @@ Full dense-retrieval pipeline:
 - **Indexing**: MedCPT Article Encoder → per-patient FAISS index
 - **Retrieval**: MedCPT Query Encoder → FAISS top-10 → MedCPT Cross-Encoder reranking
 - **Routing**: keyword heuristic classifies question as Lookup (top-3 chunks) or Reasoning (top-5 date-sorted chunks)
-- **Generation**: BioMistral-7B with constrained prompts (lookup: "not documented if absent", reasoning: chronological synthesis)
+- **Generation**:  LLama 3.1b with constrained prompts (lookup: "not documented if absent", reasoning: chronological synthesis)
 
 ### 6. Security Layer
 - Prompt injection detection (pattern matching on physician inputs)
