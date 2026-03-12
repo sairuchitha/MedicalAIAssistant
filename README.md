@@ -261,5 +261,5 @@ Use of the dataset requires appropriate data access approval from PhysioNet.
 
 # Authors
 
-Vision AI Clinical System
+Sai Ruchitha
 Georgia State University
