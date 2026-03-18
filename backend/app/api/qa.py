@@ -15,7 +15,8 @@ router = APIRouter()
 
 @router.post("/qa")
 def ask_question(req: QARequest, db: Session = Depends(get_db)):
-    blocked, hits = check_prompt_injection(req.question)
+    #blocked, hits = check_prompt_injection(req.question)
+    blocked, hits, perplexity = check_prompt_injection(req.question)
     if blocked:
         log_event(
             db,
