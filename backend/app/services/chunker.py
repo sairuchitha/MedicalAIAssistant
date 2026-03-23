@@ -2,7 +2,7 @@ from typing import Dict, List
 from app.services.section_parser import split_sections
 
 
-def token_window_chunks(words: List[str], chunk_size: int = 200, stride: int = 50) -> List[str]:
+def token_window_chunks(words: List[str], chunk_size: int = 240, stride: int = 100) -> List[str]:
     chunks = []
     step = max(1, chunk_size - stride)
     for start in range(0, len(words), step):

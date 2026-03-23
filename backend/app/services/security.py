@@ -8,6 +8,19 @@ BLOCK_PATTERNS = [
     r"show hidden prompt",
     r"output social security",
     r"leak patient identifier",
+    # New patterns added by dev-moni
+    r"you are now",
+    r"new system prompt",
+    r"disregard your instructions",
+    r"act as if",
+    r"forget everything",
+    r"override instructions",
+    r"pretend you are",
+    r"bypass security",
+    r"print all patient",
+    r"show me all notes",
+    r"dump the database",
+    r"reveal all records",
 ]
 
 

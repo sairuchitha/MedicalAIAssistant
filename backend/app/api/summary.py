@@ -1,11 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.postgres import CachedSummary, get_db
 from app.schemas import SummaryRequest, SummaryResponse, SummarySource
 from app.services.audit_logger import log_event
 from app.services.phi_masking import mask_phi
-from app.services.runtime_store import get_patient_notes
+from app.services.runtime_store import (
+    get_cached_sentences,
+    get_patient_notes,
+    set_cached_sentences,
+)
 from app.services.sentence_extractor import extract_relevant_sentences
 from app.services.summarizer import generate_structured_summary
 from app.services.verification import verify_summary
@@ -14,7 +18,7 @@ router = APIRouter()
 
 
 @router.post("/summary", response_model=SummaryResponse)
-def summarize_patient(req: SummaryRequest, db: Session = Depends(get_db)):
+def summarize_patient(req: SummaryRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     # ── Serve from cache if already generated ─────────────────────────────────
     cached = db.query(CachedSummary).filter(
         CachedSummary.subject_id == req.patient_id
@@ -38,12 +42,15 @@ def summarize_patient(req: SummaryRequest, db: Session = Depends(get_db)):
     if not notes:
         raise HTTPException(status_code=404, detail="Patient not found. Run preprocessing first.")
 
-    # ── Extract relevant sentences (with source provenance) ───────────────────
-    extracted = extract_relevant_sentences(notes)
-    if not extracted:
-        raise HTTPException(status_code=422, detail="No sentences could be extracted from patient notes.")
+    # ── Extract relevant sentences — use memory cache to skip BioClinicalBERT ──
+    extracted = get_cached_sentences(req.patient_id)
+    if extracted is None:
+        extracted = extract_relevant_sentences(notes)
+        if not extracted:
+            raise HTTPException(status_code=422, detail="No sentences could be extracted from patient notes.")
+        set_cached_sentences(req.patient_id, extracted)
 
-    # ── Generate summary (4 sections in parallel) + citations ─────────────────
+    # ── Generate summary (4 sections in parallel, each with filtered context) ──
     summary, raw_citations = generate_structured_summary(extracted)
     summary = {k: mask_phi(v) for k, v in summary.items()}
 
@@ -62,7 +69,9 @@ def summarize_patient(req: SummaryRequest, db: Session = Depends(get_db)):
     ))
     db.commit()
 
-    log_event(
+    # ── Audit log runs after response is sent — not in request path ───────────
+    background_tasks.add_task(
+        log_event,
         db,
         event_type="summary_generated",
         patient_id=req.patient_id,

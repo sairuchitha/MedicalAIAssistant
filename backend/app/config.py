@@ -9,7 +9,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    APP_NAME: str = "Vision AI Backend"
+    APP_NAME: str = "MedMind AI Backend"
     APP_VERSION: str = "0.1.0"
     APP_ENV: str = "development"
     APP_HOST: str = "0.0.0.0"
@@ -34,9 +34,18 @@ class Settings(BaseSettings):
     OLLAMA_HOST: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.1:8b"
 
-    CHUNK_TOKENS: int = 200
-    CHUNK_STRIDE: int = 50
-    RETRIEVAL_TOP_K: int = 10
+    # Chunking — 240 tokens fits within MedCPT's 256-token max_length with headroom
+    # Stride 100 (vs 50) halves total chunk count, reducing index size and embedding time
+    CHUNK_TOKENS: int = 240
+    CHUNK_STRIDE: int = 100
+
+    # Retrieval candidate pools — separate from answer top-k (LOOKUP_TOP_K / REASONING_TOP_K)
+    # Lookup: small FAISS pool, NO cross-encoder reranking (saves ~1-2s per call)
+    # Reasoning: larger pool, full cross-encoder reranking for precision
+    LOOKUP_TOP_K_RETRIEVE: int = 4
+    REASONING_TOP_K_RETRIEVE: int = 10
+
+    # How many chunks to pass into the LLM prompt after retrieval/reranking
     LOOKUP_TOP_K: int = 3
     REASONING_TOP_K: int = 5
 

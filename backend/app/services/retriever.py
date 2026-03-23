@@ -50,8 +50,26 @@ def rerank(question: str, candidate_chunks: List[dict]) -> List[dict]:
     return [item[0] for item in ranked]
 
 
-def retrieve(question: str, index, chunks, top_k: int = 10) -> List[dict]:
+def retrieve(question: str, index, chunks, question_type: str = "reasoning") -> List[dict]:
+    """Adaptive retrieval: lookup questions skip the cross-encoder entirely.
+
+    - lookup:    small FAISS pool (LOOKUP_TOP_K_RETRIEVE=4), no reranking.
+                 FAISS inner-product scores are already high-quality for simple
+                 factual questions; the cross-encoder adds ~1-2s for no gain.
+    - reasoning: larger FAISS pool (REASONING_TOP_K_RETRIEVE=10), full
+                 cross-encoder reranking for multi-hop / trend questions where
+                 re-ordering matters.
+    """
     q = embed_query(question)
-    scores, ids = index.search(q, top_k)
+
+    if question_type == "lookup":
+        top_k = settings.LOOKUP_TOP_K_RETRIEVE
+        _, ids = index.search(q, top_k)
+        # Return in FAISS score order (already ranked by inner product)
+        return [chunks[i] for i in ids[0] if i != -1]
+
+    # reasoning (default)
+    top_k = settings.REASONING_TOP_K_RETRIEVE
+    _, ids = index.search(q, top_k)
     candidates = [chunks[i] for i in ids[0] if i != -1]
     return rerank(question, candidates)

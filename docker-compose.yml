@@ -1,17 +1,32 @@
 version: "3.9"
 
+# ── Local development setup ────────────────────────────────────────────────────
+# PostgreSQL runs in Docker. Backend and frontend run locally (virtualenv + npm).
+# The database `vision_ai` is created automatically by Docker on first start.
+# No manual createdb needed.
+#
+# Typical dev usage:
+#   docker-compose up -d postgres        ← start DB only
+#   source backend/.venv/bin/activate
+#   uvicorn app.main:app --reload --port 8000
+#   cd frontend && npm run dev
+#
+# Full stack in Docker (optional, for deployment testing):
+#   docker-compose up --build
+# ──────────────────────────────────────────────────────────────────────────────
+
 services:
   postgres:
     image: postgres:16
-    container_name: vision-ai-postgres
+    container_name: medmind-postgres
     environment:
-      POSTGRES_DB: vision_ai
+      POSTGRES_DB: vision_ai        # created automatically — no createdb needed
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     volumes:
-      - vision_ai_pg:/var/lib/postgresql/data
+      - medmind_pg:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d vision_ai"]
       interval: 5s
@@ -21,30 +36,32 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: vision-ai-backend
+    container_name: medmind-backend
     env_file:
       - ./backend/.env
     environment:
-      # Override localhost → Docker service name
-      POSTGRES_HOST: postgres
-      # Reach Ollama running on Mac host
-      OLLAMA_HOST: http://host.docker.internal:11434
+      POSTGRES_HOST: postgres                         # Docker service name
+      OLLAMA_HOST: http://host.docker.internal:11434  # Ollama on Mac host
+      TOKENIZERS_PARALLELISM: "false"                 # avoid fork/deadlock warning
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/data:/app/data
+      - ./backend/data:/app/data   # NOTEEVENTS.csv and processed outputs
     depends_on:
       postgres:
         condition: service_healthy
+    # Linux only: uncomment the two lines below so host.docker.internal resolves
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
 
   frontend:
     build:
       context: ./frontend
-    container_name: vision-ai-frontend
+    container_name: medmind-frontend
     ports:
       - "5173:5173"
     depends_on:
       - backend
 
 volumes:
-  vision_ai_pg:
+  medmind_pg:
