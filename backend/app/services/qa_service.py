@@ -49,8 +49,9 @@ Retrieved Notes:
 """.strip()
 
 
-def answer_question(question: str, retrieved_chunks):
-    qtype = classify_question(question)
+def answer_question(question: str, retrieved_chunks, question_type: str = None):
+    # Accept a pre-classified type from the API layer (avoids running classifier twice)
+    qtype = question_type if question_type is not None else classify_question(question)
     prompt = build_prompt(question, retrieved_chunks, qtype)
     answer = generate_with_llm(prompt)
     selected = retrieved_chunks[:3] if qtype == "lookup" else retrieved_chunks[:5]

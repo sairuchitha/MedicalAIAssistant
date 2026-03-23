@@ -22,7 +22,7 @@ def mean_pool(last_hidden_state, attention_mask):
     return masked.sum(1) / mask.sum(1).clamp(min=1e-9)
 
 
-def embed_chunks(texts: List[str], batch_size: int = 8) -> np.ndarray:
+def embed_chunks(texts: List[str], batch_size: int = 32) -> np.ndarray:
     vectors = []
     with torch.no_grad():
         for i in range(0, len(texts), batch_size):

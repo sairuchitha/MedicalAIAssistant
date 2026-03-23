@@ -11,9 +11,53 @@ SUMMARY_SECTIONS = [
     "Recent History and Care Plan",
 ]
 
+# Keywords used to filter sentences relevant to each section.
+# Each section only sees its own slice of evidence — smaller prompt, better quality.
+_SECTION_KEYWORDS: Dict[str, List[str]] = {
+    "Chief Complaint": [
+        "chief complaint", "presenting", "came in", "brought in", "admitted for",
+        "admission", "reason for", "presenting with", "chief", "complaint",
+        "cc:", "c/c:", "presenting complaint",
+    ],
+    "Active Diagnoses": [
+        "diagnos", "condition", "disease", "disorder", "problem", "history of",
+        "known case", "assessment", "impression", "finding", "syndrome",
+        "failure", "insufficiency", "infection", "positive",
+    ],
+    "Current Medications": [
+        "mg", "mcg", "tablet", "capsule", "medication", "drug", "prescribed",
+        "dose", "insulin", "metformin", "aspirin", "lisinopril", "atorvastatin",
+        "started on", "continued on", "oral", "iv", "subcutaneous", "daily",
+        "twice", "administered", "given",
+    ],
+    "Recent History and Care Plan": [
+        "plan", "follow", "discharge", "procedure", "treatment", "history",
+        "hospital course", "course", "managed", "will be", "scheduled",
+        "recommend", "reviewed", "discussed", "education", "return",
+    ],
+}
+
+# How many filtered sentences to pass to each section (keeps prompts lean)
+_SECTION_CONTEXT_LIMIT = 40
+
+
+def filter_sentences_for_section(section_name: str, sentences: List[str]) -> List[str]:
+    """Return sentences most relevant to the given section using keyword matching.
+
+    Falls back to all sentences (capped) if too few keyword matches are found.
+    """
+    keywords = _SECTION_KEYWORDS.get(section_name, [])
+    matched = [
+        s for s in sentences
+        if any(kw.lower() in s.lower() for kw in keywords)
+    ]
+    # If we matched at least 5 sentences use them, otherwise fall back to all
+    source = matched if len(matched) >= 5 else sentences
+    return source[:_SECTION_CONTEXT_LIMIT]
+
 
 def build_section_prompt(section_name: str, evidence: List[str]) -> str:
-    joined = "\n".join(f"- {x}" for x in evidence[:60])
+    joined = "\n".join(f"- {x}" for x in evidence)
     return f"""
 Task: Write only the section named "{section_name}" from the clinical evidence below.
 
@@ -57,8 +101,13 @@ def clean_output(text: str, section_name: str = "") -> str:
     return cleaned if cleaned else "Not documented"
 
 
-def _generate_section(section_name: str, evidence: List[str]) -> Tuple[str, str]:
-    """Returns (section_name, generated_text). Runs in a thread pool."""
+def _generate_section(section_name: str, all_sentences: List[str]) -> Tuple[str, str]:
+    """Returns (section_name, generated_text). Runs in a thread pool.
+
+    Filters sentences to only those relevant to this section before building
+    the prompt — smaller context per call, better focus, same parallelism.
+    """
+    evidence = filter_sentences_for_section(section_name, all_sentences)
     prompt = build_section_prompt(section_name, evidence)
     raw = generate_with_llm(prompt)
     return section_name, clean_output(raw, section_name)

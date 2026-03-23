@@ -40,7 +40,7 @@ def mean_pool(last_hidden_state, attention_mask):
     return masked.sum(1) / mask.sum(1).clamp(min=1e-9)
 
 
-def embed_sentences(sentences: List[str], batch_size: int = 16) -> np.ndarray:
+def embed_sentences(sentences: List[str], batch_size: int = 32) -> np.ndarray:
     all_embeds = []
     with torch.no_grad():
         for i in range(0, len(sentences), batch_size):
