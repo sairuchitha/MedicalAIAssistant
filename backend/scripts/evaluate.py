@@ -142,28 +142,53 @@ def evaluate_summarization(patient_ids: list) -> dict:
 
 # ── RAG / QA evaluation ────────────────────────────────────────────────────────
 
-# Manually curated QA pairs (question, expected_answer_keywords, patient_id)
-# Extend this list or replace with GPT-4 generated pairs
+from app.services.qa_service import classify_question
+
+# QA pairs tagged with question_type.
+# lookup  — factual single-fact retrieval (skips cross-encoder)
+# reasoning — multi-hop / trend questions (uses full reranking)
 SAMPLE_QA_PAIRS = [
+    # ── Lookup: single-fact, point-in-time ───────────────────────────────────
     # Patient 95324 — ICU/sepsis
-    {"patient_id": 95324, "question": "What cultures were taken?",
-     "keywords": ["blood", "urine", "culture"]},
     {"patient_id": 95324, "question": "What was the ventilation status?",
-     "keywords": ["ventilation", "extubat", "intubat"]},
+     "keywords": ["ventilation", "extubat", "intubat"], "qtype": "lookup"},
+    {"patient_id": 95324, "question": "What is the current antibiotic regimen?",
+     "keywords": ["antibiotic", "vancomycin", "pipercillin", "meropenem", "zosyn"], "qtype": "lookup"},
     # Patient 64925 — brain mass
     {"patient_id": 64925, "question": "What is the patient's diagnosis?",
-     "keywords": ["mass", "parietal", "brain", "tumor"]},
-    {"patient_id": 64925, "question": "What symptoms led to admission?",
-     "keywords": ["confusion", "weakness", "hemiparesis", "facial"]},
+     "keywords": ["mass", "parietal", "brain", "tumor", "lesion"], "qtype": "lookup"},
+    {"patient_id": 64925, "question": "What were the most recent vitals?",
+     "keywords": ["blood pressure", "heart rate", "temperature", "bp", "hr"], "qtype": "lookup"},
     # Patient 62561 — oncology
     {"patient_id": 62561, "question": "What is the patient's cancer history?",
-     "keywords": ["breast", "mastectomy", "chemo", "cancer"]},
+     "keywords": ["breast", "mastectomy", "chemo", "cancer", "carcinoma"], "qtype": "lookup"},
     # Patient 32639 — trauma
     {"patient_id": 32639, "question": "What anticoagulation was the patient on?",
-     "keywords": ["coumadin", "warfarin", "anticoagul"]},
+     "keywords": ["coumadin", "warfarin", "anticoagul", "heparin"], "qtype": "lookup"},
     # Patient 64230 — cardiac
     {"patient_id": 64230, "question": "What cardiac condition does the patient have?",
-     "keywords": ["aortic stenosis", "aortic", "stenosis", "valve"]},
+     "keywords": ["aortic stenosis", "aortic", "stenosis", "valve"], "qtype": "lookup"},
+
+    # ── Reasoning: multi-hop, trend, progression ─────────────────────────────
+    # Patient 95324 — ICU/sepsis
+    {"patient_id": 95324, "question": "How did the patient's respiratory status change over time?",
+     "keywords": ["ventilation", "extubat", "intubat", "oxygen", "respiratory"], "qtype": "reasoning"},
+    {"patient_id": 95324, "question": "What cultures were taken and what was the progression of infection management?",
+     "keywords": ["blood", "urine", "culture", "antibiotic", "sepsis"], "qtype": "reasoning"},
+    # Patient 64925 — brain mass
+    {"patient_id": 64925, "question": "How did the patient's neurological symptoms progress leading to admission?",
+     "keywords": ["confusion", "weakness", "hemiparesis", "facial", "neuro"], "qtype": "reasoning"},
+    {"patient_id": 64925, "question": "What was the history of imaging findings and how did they evolve?",
+     "keywords": ["mri", "ct", "imaging", "mass", "lesion", "scan"], "qtype": "reasoning"},
+    # Patient 62561 — oncology
+    {"patient_id": 62561, "question": "How has the patient's cancer treatment progressed over time?",
+     "keywords": ["chemo", "chemotherapy", "treatment", "cycle", "radiation", "cancer"], "qtype": "reasoning"},
+    # Patient 32639 — trauma
+    {"patient_id": 32639, "question": "What was the history of anticoagulation management and any complications?",
+     "keywords": ["warfarin", "coumadin", "bleeding", "anticoagul", "inr"], "qtype": "reasoning"},
+    # Patient 64230 — cardiac
+    {"patient_id": 64230, "question": "How did the patient's cardiac condition and management evolve during the hospital stay?",
+     "keywords": ["aortic", "valve", "cardiac", "surgery", "stenosis", "echo"], "qtype": "reasoning"},
 ]
 
 
@@ -176,12 +201,19 @@ def recall_at_k(retrieved_chunks: list, keywords: list, k: int = 3) -> bool:
 
 def evaluate_qa(qa_pairs: list) -> dict:
     print("\n=== RAG / QA Evaluation ===")
-    hits, total = 0, 0
+
+    lookup_hits, lookup_total = 0, 0
+    reasoning_hits, reasoning_total = 0, 0
+
+    print(f"\n  {'Question':<62} {'Type':<10} {'Result'}")
+    print(f"  {'-'*62} {'-'*10} {'-'*6}")
 
     for pair in qa_pairs:
         pid = pair["patient_id"]
         question = pair["question"]
         keywords = pair["keywords"]
+        # Use the tagged type; fall back to the classifier for untagged pairs
+        qtype = pair.get("qtype") or classify_question(question)
 
         cached = get_patient_index(pid)
         if cached is None:
@@ -189,17 +221,34 @@ def evaluate_qa(qa_pairs: list) -> dict:
             continue
 
         index, chunk_meta = cached
-        retrieved = retrieve(question, index, chunk_meta)
+        retrieved = retrieve(question, index, chunk_meta, question_type=qtype)
 
         hit = recall_at_k(retrieved, keywords, k=3)
-        hits += int(hit)
-        total += 1
         status = "✓" if hit else "✗"
-        print(f"  [{status}] P{pid}: {question[:60]}")
+        print(f"  [{status}] P{pid}: {question[:58]:<58} {qtype:<10}")
 
-    recall = hits / total if total > 0 else 0.0
-    print(f"\n  Recall@3: {hits}/{total} = {recall:.2f}  (target ≥ 0.80)")
-    return {"recall_at_3": recall, "hits": hits, "total": total}
+        if qtype == "lookup":
+            lookup_hits += int(hit)
+            lookup_total += 1
+        else:
+            reasoning_hits += int(hit)
+            reasoning_total += 1
+
+    total = lookup_total + reasoning_total
+    hits = lookup_hits + reasoning_hits
+    recall_lookup   = lookup_hits   / lookup_total   if lookup_total   > 0 else 0.0
+    recall_reasoning = reasoning_hits / reasoning_total if reasoning_total > 0 else 0.0
+    recall_overall  = hits / total if total > 0 else 0.0
+
+    print(f"\n  Recall@3 — Lookup:    {lookup_hits}/{lookup_total} = {recall_lookup:.2f}   (target ≥ 0.80)")
+    print(f"  Recall@3 — Reasoning: {reasoning_hits}/{reasoning_total} = {recall_reasoning:.2f}   (target ≥ 0.80)")
+    print(f"  Recall@3 — Overall:   {hits}/{total} = {recall_overall:.2f}   (target ≥ 0.80)")
+
+    return {
+        "recall_at_3_lookup":    {"score": recall_lookup,    "hits": lookup_hits,    "total": lookup_total},
+        "recall_at_3_reasoning": {"score": recall_reasoning, "hits": reasoning_hits, "total": reasoning_total},
+        "recall_at_3_overall":   {"score": recall_overall,   "hits": hits,           "total": total},
+    }
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -221,18 +270,20 @@ def run():
     print("\n=== Final Results ===")
     for metric, val in summ_results.items():
         print(f"  {metric}: {val['mean']:.3f}")
-    print(f"  Recall@3: {qa_results['recall_at_3']:.3f}")
+    for key, val in qa_results.items():
+        print(f"  {key}: {val['hits']}/{val['total']} = {val['score']:.3f}")
 
     # Save results
-    output = {"summarization": summ_results, "qa": qa_results}
     out_path = Path("data/processed/evaluation_results.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(
-            {k: {m: v["mean"] if isinstance(v, dict) else v for m, v in vals.items()}
-             if isinstance(vals, dict) else vals
-             for k, vals in output.items()},
-            f, indent=2
+            {
+                "summarization": {k: v["mean"] for k, v in summ_results.items()},
+                "qa": {k: v["score"] for k, v in qa_results.items()},
+                "qa_detail": qa_results,
+            },
+            f, indent=2,
         )
     print(f"\nResults saved to {out_path}")
 

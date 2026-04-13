@@ -22,7 +22,7 @@ class SummaryResponse(BaseModel):
 
 class QARequest(BaseModel):
     patient_id: int
-    question: str
+    question: str = Field(..., min_length=3, max_length=500, description="Clinical question (3–500 characters)")
 
 
 class Citation(BaseModel):

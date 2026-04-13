@@ -28,7 +28,10 @@ export async function askQuestion(patientId, question) {
     body: JSON.stringify({ patient_id: patientId, question }),
   });
   if (!res.ok) {
-    throw new Error("Failed to fetch QA");
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.detail || "Failed to fetch QA");
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }

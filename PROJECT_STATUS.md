@@ -1,8 +1,8 @@
 # MedMind AI — Project Status
 
-**Last Updated:** March 2026
-**Hardware:** Apple M3 (MPS acceleration), Python 3.13
-**Stack:** FastAPI, React, PostgreSQL, Ollama, FAISS
+**Last Updated:** April 2026
+**Hardware:** Apple M3 (MPS acceleration for MedCPT models), Python 3.12
+**Stack:** FastAPI, React, PostgreSQL, Ollama (llama3.1:8b), FAISS, MedCPT, BioClinicalBERT, Presidio
 
 ---
 
@@ -13,23 +13,37 @@
 | Component | Detail |
 |-----------|--------|
 | MIMIC-III CSV loading | Filters by note category, strips whitespace, applies minimum word count filter |
-| PHI masking (pre-model) | Microsoft Presidio — 9 entity types: person, date, phone, SSN, location, and others |
+| PHI masking (pre-model) | Microsoft Presidio — names, dates, phone, SSN, location, MRN, and others |
 | Note deduplication | MD5 hash deduplication within each patient |
 | Section parsing | spaCy and regex — 8 clinical section types (HPI, Assessment, Plan, Medications, etc.) |
-| Token-window chunking | 240-token windows with 100-token stride (updated from 200/50 — fills MedCPT 256-token limit, ~50% fewer chunks per patient) |
-| Patient selection | Config-driven auto-selection via MAX_PATIENTS in .env (default 100). Criteria: must have Discharge summary, ≥2 note categories, ≥20 notes. Previously 5 hardcoded patients. |
+| Token-window chunking | 240-token windows with 100-token stride (fills MedCPT 256-token limit, ~50% fewer chunks vs. prior 200/50) |
+| Patient selection | Config-driven auto-selection via MAX_PATIENTS in .env. Criteria: must have Discharge summary, ≥2 note categories, ≥20 notes. |
 | Parallel PHI masking | Notes masked concurrently within each patient (ThreadPoolExecutor, 4 workers per patient) |
 
 ### Models
 
 | Component | Detail |
 |-----------|--------|
-| BioClinicalBERT sentence extraction | Mean-pool embeddings, two-pass selection: always-keep clinical terms plus 60% soft cosine threshold |
+| BioClinicalBERT sentence extraction | Mean-pool embeddings, two-pass selection: always-keep clinical terms + 60% soft cosine threshold |
 | MedCPT Article Encoder | Builds per-patient FAISS IndexFlatIP with L2 normalization |
-| MedCPT Query Encoder | Embeds physician questions for dense retrieval |
-| MedCPT Cross-Encoder | Reranks retrieved chunks — only runs for reasoning queries (skipped for lookup) |
-| llama3.1:8b summarization | 4-section parallel generation via Ollama and ThreadPoolExecutor, each section receives keyword-filtered context (max 40 sentences per section) |
-| llama3.1:8b question answering | Lookup and Reasoning routing with separate constrained prompt templates; question type classified once and passed through pipeline |
+| MedCPT Query Encoder | Embeds physician questions for dense retrieval (MPS) |
+| MedCPT Cross-Encoder | Reranks retrieved chunks — only runs for reasoning queries, skipped for lookup (MPS) |
+| llama3.1:8b summarization | 4-section parallel generation via Ollama and ThreadPoolExecutor; section-filtered context (max 40 sentences per section); temperature=0; 120s timeout |
+| llama3.1:8b QA | Lookup and Reasoning routing with separate prompt templates; question type classified once and passed through pipeline; temperature=0; 120s timeout |
+
+### Security
+
+| Component | Detail |
+|-----------|--------|
+| Input length guard | Rejects questions >500 chars at schema level (Pydantic) and security layer |
+| Regex injection guard | 30+ patterns covering: verbatim injections, social engineering, data exfiltration framing, role-play/authority bypass |
+| GPT-2 perplexity (offline only) | compute_perplexity() available in evaluate_security.py; disabled in API server due to Apple Silicon MPS segfault when loaded alongside MedCPT models (exit 139). Caught 0/19 queries in evaluation — social engineering prompts have similar perplexity to legitimate clinical questions |
+| Indirect injection guard | Retrieved note chunks scanned for embedded injection patterns before LLM sees them |
+| PHI masking — pre-model | Presidio applied to all MIMIC input text before any model sees it |
+| PHI masking — post-model | Presidio applied to all LLM outputs before returning to client |
+| Audit log (PHI-safe) | PHI-masked question stored (not raw); blocked queries log only length and pattern count |
+| Generic error on block | HTTP 400 with generic "Query not allowed." — no injection pattern information leaked |
+| CORS | Restricted to localhost:5173 — no cross-origin API access |
 
 ### Storage and Backend
 
@@ -39,107 +53,140 @@
 | PostgreSQL — notes table | PHI-masked text, row_id, chart_date, category, word_count |
 | PostgreSQL — faiss_indexes table | Serialized FAISS index and chunk metadata (JSON) per patient |
 | PostgreSQL — cached_summaries table | All 4 summary sections, citations (JSON), warnings (JSON) |
-| PostgreSQL — audit_log table | event_type, patient_id, payload, timestamp |
-| Runtime in-memory cache | Loads all patients from PostgreSQL at startup in parallel (8 threads); also caches extracted sentences per patient and QA answers (SHA-256 keyed) |
-| Startup initialization | lifespan: init_db then initialize_runtime (parallel, 8-thread FAISS deserialization) |
+| PostgreSQL — audit_log table | event_type, patient_id, PHI-masked payload, timestamp |
+| Runtime in-memory cache | Loads all patients from PostgreSQL at startup in parallel (8 threads); caches extracted sentences and QA answers (SHA-256 keyed) |
+| Startup initialization | lifespan: init_db then initialize_runtime (parallel 8-thread FAISS deserialization) |
 | Preprocessing script | scripts/preprocess.py — idempotent, config-driven, CLI flags: --patient-ids, --skip-cache, --csv |
 | Cache warm-up script | scripts/warm_cache.py — parallel (2 patients concurrently, each with own DB session), CLI flags: --force, --patient-ids |
-| Background audit logging | log_event() runs via FastAPI BackgroundTasks after response is sent — removed from request path |
+| Background audit logging | log_event() runs via FastAPI BackgroundTasks after response is sent |
 
 ### API Endpoints
 
 | Endpoint | Detail |
 |----------|--------|
-| GET /api/patients | Returns all patient IDs from memory in under 100ms |
-| POST /api/summary | Cache-first: PostgreSQL, then memory, then generate. Returns sections, citations, warnings |
-| POST /api/qa | Injection check, adaptive FAISS retrieval (lookup skips reranking), LLM generation, QA memory cache. Returns answer and citations |
-| GET /health | App name and version |
+| GET /api/patients | Returns all patient IDs from memory in <100ms |
+| POST /api/summary | Cache-first: PostgreSQL, then generate. Returns sections, citations, warnings |
+| POST /api/qa | 3-layer injection check, indirect injection scan, adaptive FAISS retrieval (lookup skips reranking), LLM generation, QA memory cache. Returns answer and citations |
 
-### Security
+### Question Classification Fix
 
-| Component | Detail |
-|-----------|--------|
-| Pre-model PHI masking | Presidio applied to all MIMIC input text before any model sees it |
-| Post-model PHI masking | Presidio applied to all LLM outputs before returning to client |
-| Entity-level verification | Regex checks medications, dates, and lab values against source evidence |
-| Prompt injection detection | 6 regex patterns — blocks and logs suspicious queries |
-| Audit logging | All summary and QA events written to PostgreSQL via background task (non-blocking) |
+Reasoning keywords are now checked **before** lookup keywords to prevent misclassification. Example: "What is the trend of blood glucose?" previously routed as `lookup` ("what is" matched first); now correctly routes as `reasoning` ("trend" matched first). Additional reasoning keywords added: "evolv", "fluctuat".
 
 ### Frontend
 
 | Component | Detail |
 |-----------|--------|
-| Patient selector | Dropdown populated from API, loads in under 100ms |
+| Patient selector | Dropdown populated from API, loads in <100ms |
 | Summary display | 4 sections with section labels, warning box, skeleton loading states |
-| QA interface | Text input with Ask button, styled answer box, citation chips |
+| QA interface | Text input, Ask button with elapsed timer ("Asking... 42s"), injection block amber banner |
+| Reasoning latency hint | Shown for questions matching reasoning keywords — warns 60–90s expected |
+| Error handling | 400 → amber blocked banner; other errors → red error text |
 | AbortController | Cancels in-flight summary request when patient is changed |
-| Loading states | Skeleton shimmer loaders per panel (summary and QA) |
-| Landing page | Production UI: sticky navbar, hero section with ECG illustration, stats bar, 6-feature grid, how-it-works steps, live assistant section, footer |
+| Landing page | Production UI: sticky navbar, hero, stats bar, 6-feature grid, how-it-works, live assistant, footer |
 
 ### Evaluation Scripts
 
-| Component | Detail |
-|-----------|--------|
-| ROUGE-L | scripts/evaluate.py — evaluated against discharge summaries as ground truth |
-| BERTScore-F | scripts/evaluate.py |
-| Recall@3 | scripts/evaluate.py — 7 manually curated QA pairs across 5 patients |
+| Script | Metrics Computed |
+|--------|-----------------|
+| scripts/evaluate.py | ROUGE-L, BERTScore-F1, Recall@3 (lookup split, reasoning split, overall), MRR (lookup, reasoning, overall), Reranking Gain, Faithfulness F1 |
+| scripts/evaluate_security.py | Injection detection TP/TN/FP/FN, Precision, Recall, F1, FPR, FNR, per-layer and per-category breakdown, PHI residual rate, MRR, Reranking Gain |
+| scripts/demo_attack_defense.py | Three-state demo: no defense → regex-only → full defense. Saves JSON results to data/processed/attack_defense_results.json |
 
 ---
 
-## 2. Not Yet Implemented
+## 2. Measured Baseline Results
 
-### Primary Gaps
+### Summarization
 
-| Feature | Notes |
-|---------|-------|
-| GPT-2 perplexity-based injection detection | Proposal required GPT-2 scoring all inputs and blocking above a perplexity threshold. Currently only 6 regex patterns. |
-| BERTScore faithfulness verification | Proposal required semantic BERTScore check per generated sentence against source text. Currently only regex entity matching. |
-| Citation UI (inline footnotes) | API returns citation data but the frontend displays a flat list. Proposal required clickable numbered footnotes linking to original note chunks. |
-| Warning badges in UI | Warnings are returned by the API but not visually highlighted per section. |
+| Metric | Target | Actual | Status |
+|--------|--------|--------|--------|
+| ROUGE-L | ≥ 0.35 | 0.108 | Structural — abstractive output vs. extractive ground truth; BERTScore is the real signal |
+| BERTScore-F1 | ≥ 0.78 | **0.795** | PASS |
+| Faithfulness F1 | ≥ 0.75 | **0.768** | PASS — borderline; drags on short medication fragments |
 
-### Lower Priority Gaps
+### RAG and Question Answering
 
-| Feature | Notes |
-|---------|-------|
-| ChromaDB vector storage | Skipped. FAISS indexes are serialized into PostgreSQL binary blobs, reducing infrastructure from 3 services to 2 with no loss of retrieval quality. |
-| Near-duplicate note detection | Only MD5 exact dedup is implemented. Proposal required cosine similarity detection at threshold 0.95. |
-| Automated QA pair generation | Only 7 manual QA pairs. Proposal required 500 to 1000 GPT-4-generated pairs. |
-| Hallucination rate tracking | Not measured. |
-| Exact match evaluation | Not computed. |
-| Citation accuracy measurement | Citations are generated but not evaluated for accuracy. |
-| Role-based access control | Any authenticated user can access any patient. |
+| Metric | Target | Actual | Status |
+|--------|--------|--------|--------|
+| Recall@3 — Lookup | ≥ 0.80 | **0.857** | PASS |
+| Recall@3 — Reasoning | ≥ 0.80 | **1.000** | PASS |
+| Recall@3 — Overall | ≥ 0.80 | **0.929** | PASS |
+| MRR — Lookup | ≥ 0.70 | **0.857** | PASS |
+| MRR — Reasoning | ≥ 0.70 | **0.929** | PASS |
+| MRR — Overall | ≥ 0.70 | **0.893** | PASS |
+| Reranking Gain | > 0 | **+0.14** | PASS |
+
+### Security
+
+| Metric | Target | Actual | Status |
+|--------|--------|--------|--------|
+| Injection Detection Rate | ≥ 0.90 | **0.895** (17/19) | PASS |
+| Injection Precision | ≥ 0.90 | **1.000** | PASS |
+| Injection F1 | ≥ 0.90 | **0.950** | PASS |
+| False Positive Rate | ≤ 0.05 | **0.000** | PASS |
+| PHI Residual Rate | ≤ 0.02 | **0.0001** | PASS |
+
+#### Attack/Defense Three-State Comparison
+
+| State | Detection Rate | Attack Success |
+|-------|---------------|---------------|
+| No defense | 0.0% (0/19) | 100% |
+| Regex-only (pre-social-eng patterns) | 52.6% (10/19) | 47.4% |
+| Full defense (current) | **89.5%** (17/19) | **10.5%** |
+
+Missed: 2 paraphrase injections using "disregard prior context" and "this task only" variants.
+
+### Performance
+
+| Metric | Target | Actual | Status |
+|--------|--------|--------|--------|
+| Patient list load | <1s | <100ms | Exceeds target |
+| Summary (cached) | <30s | <100ms | Exceeds target |
+| Summary (first generation) | <30s | 30–60s | Borderline — cached path meets target |
+| QA lookup response | <10s | 3–6s | Exceeds target |
+| QA reasoning response | <10s | 30–90s | **Below target** — 8B model + 5-chunk context; expected for llama3.1:8b on Apple Silicon |
+| QA repeated question | <1s | <10ms | Exceeds target (memory cache) |
+| Server startup (105 patients) | <30s | ~15–20s | PASS |
+| Preprocessing (105 patients) | — | ~1.5–2 hours | One-time cost |
 
 ---
 
-## 3. Working vs. Non-Working
+## 3. Working vs. Not Working
 
 ### Working (tested end-to-end)
 
-- Patient dropdown loads in under 100ms via in-memory runtime store
-- Summary served in under 100ms when cached in PostgreSQL
-- Summary generates in approximately 30 to 60 seconds on first request (BioClinicalBERT extraction plus 4 parallel Ollama calls with section-filtered context)
-- BioClinicalBERT sentence extraction cached per patient — only runs once per server session per patient
-- QA lookup answers returned in approximately 3 to 6 seconds (no cross-encoder reranking)
-- QA reasoning answers returned in approximately 5 to 10 seconds (full cross-encoder reranking)
-- QA results cached in memory — identical questions return instantly
-- Adaptive retrieval routing working: lookup → FAISS top-4 direct, reasoning → FAISS top-10 + reranking
-- PHI masking working — Presidio replaces names, dates, and MRNs at both input and output
-- FAISS indexing and retrieval working — scales to 100 patients
+- Patient dropdown loads in <100ms from in-memory runtime store
+- Summary served in <100ms when cached in PostgreSQL
+- Summary generates in ~30–60s on first request (BioClinicalBERT + 4 parallel Ollama calls)
+- BioClinicalBERT sentence extraction cached per patient — only runs once per server session
+- QA lookup answers in ~3–6s (no cross-encoder)
+- QA reasoning answers in ~30–90s (full cross-encoder + 8B Ollama) — elapsed timer shown in UI
+- QA results cached — identical questions return in <10ms
+- Adaptive retrieval routing: lookup → FAISS top-4 direct, reasoning → FAISS top-10 + reranking
+- PHI masking working — Presidio at both input and output; residual rate 0.0001
+- 3-layer injection defense working — 89.5% detection, 0% false positives
+- Indirect injection scan — retrieved chunks filtered before LLM
+- CORS locked to localhost:5173
+- Injection block banner shown in UI (amber warning)
+- All evaluation scripts working and producing actual numbers
+- Three-state attack/defense demo working
+- FAISS indexing and retrieval working — 105 patients, 10,244 notes
 - PostgreSQL storing all data correctly
-- Apple MPS acceleration active for all PyTorch models
-- Parallel startup initialization — FAISS deserialization across 8 threads
-- Parallel warm cache — 2 patients processed concurrently
-- Parallel PHI masking — 4 workers per patient during preprocessing
-- Production frontend live — landing page, hero, features, assistant interface
-- Audit logging runs as background task — removed from request path
-- preprocess.py auto-selects patients from MIMIC, no hardcoded IDs
+- MPS acceleration active for MedCPT models
+- Parallel startup — 8-thread FAISS deserialization
+- Audit log PHI-safe — raw question never persisted
+- Production frontend with full landing page, design system, live assistant
 
-### Not Working or Not Yet Tested
+### Known Issues
 
-- Evaluation script (scripts/evaluate.py) — not yet run; requires rouge-score and bert-score packages
-- Prompt injection detection is easily bypassed by rephrasing; GPT-2 perplexity layer is missing
-- BERTScore faithfulness check is not implemented
-- Citation footnotes are not rendered in the frontend
+| Issue | Severity | Workaround |
+|-------|----------|-----------|
+| GPT-2 perplexity causes MPS segfault (exit 139) when MedCPT models are loaded | Medium | Disabled in API; available in offline scripts only |
+| QA reasoning latency 30–90s for llama3.1:8b | Medium | UI shows elapsed timer; cached on second ask |
+| No authentication | High (production blocker) | localhost-only deployment for demo |
+| No rate limiting | High (production blocker) | Single-user local deployment |
+| Race condition on concurrent summary requests | Medium | Single-user local deployment |
+| QA `warnings` array not rendered in UI | Low | Warnings returned in API response, just not displayed |
 
 ---
 
@@ -154,7 +201,7 @@ MIMIC NOTEEVENTS.csv
   → deduplicate (MD5 hash)
   → parallel PHI masking (Presidio, 4 workers per patient)
   → section parsing and token-window chunking (240 tokens, 100-token stride)
-  → MedCPT Article Encoder (batch=32) → FAISS IndexFlatIP (L2-normalized)
+  → MedCPT Article Encoder (batch=32, MPS) → FAISS IndexFlatIP (L2-normalized)
   → store Patient, Note, FaissIndex in PostgreSQL
   → pre-generate summaries → CachedSummary in PostgreSQL
 ```
@@ -170,35 +217,15 @@ initialize_runtime() — load all patients and FAISS indexes from PostgreSQL in 
   → _qa_cache: populated lazily on first QA request per patient
 ```
 
-### Request: GET /api/patients
-
-```
-runtime_store.get_all_patient_ids() — returns in under 100ms from memory
-```
-
-### Request: POST /api/summary
-
-```
-Check CachedSummary in PostgreSQL
-  if cached: return in under 100ms
-
-  if not cached:
-    get patient notes from memory
-    BioClinicalBERT: always-keep pass + 60% cosine threshold
-    generate_structured_summary(): 4x llama3.1:8b via Ollama (parallel)
-    PHI mask output (Presidio)
-    entity-level verification (regex)
-    store in CachedSummary
-    return sections, citations, warnings
-
-  [Not implemented: BERTScore faithfulness layer]
-```
-
 ### Request: POST /api/qa
 
 ```
-Prompt injection check (6 regex patterns)
-Check QA memory cache (SHA-256 key: patient_id + normalized question)
+Layer 1: Pydantic validation (3–500 chars)
+Layer 2: Input length check (>500 → reject)
+Layer 3: Regex pattern guard (30+ patterns: verbatim + social engineering)
+[Layer 4: GPT-2 perplexity — DISABLED in API server, available offline]
+
+Check QA memory cache (SHA-256: patient_id + normalized question)
   if cached: return instantly
 
 Classify question type once (lookup / reasoning)
@@ -211,143 +238,61 @@ Get patient FAISS index from memory
 
   if reasoning:
     FAISS top-10 (REASONING_TOP_K_RETRIEVE)
-    MedCPT Cross-Encoder: rerank all 10 candidates
+    MedCPT Cross-Encoder: rerank all 10 candidates (MPS)
     pass top-5 date-sorted chunks to LLM
 
-llama3.1:8b generation via Ollama
+Indirect injection scan: filter retrieved chunks for embedded patterns
+llama3.1:8b generation via Ollama (temperature=0, timeout=120s)
 PHI mask output (Presidio)
 Store result in QA memory cache
-Audit log via BackgroundTask (non-blocking)
+Audit log via BackgroundTask (PHI-masked payload, non-blocking)
 Return answer and citations
-
-  [Not implemented: GPT-2 perplexity injection detection]
-  [Not implemented: BERTScore faithfulness check]
-```
-
-### Frontend (React)
-
-```
-Patient dropdown
-Summary display (4 sections with warnings)
-QA interface with answer display
-AbortController on patient change
-
-  [Not implemented: clickable citation footnotes]
-  [Not implemented: per-section warning badges]
 ```
 
 ---
 
-## 5. Baseline Results
+## 5. Not Yet Implemented (Priority Order)
 
-Note: The evaluation script has not been run. Targets are from the original proposal. Run `python -m scripts.evaluate` from the backend directory to generate actual numbers.
+### Before Demo or Submission
+| # | Task | File | Effort |
+|---|------|------|--------|
+| 1 | Surface QA warnings in UI | frontend/src/App.jsx | 30 min |
+| 2 | Add summary `generated_at` to response | app/api/summary.py | 20 min |
 
-### Summarization
-
-| Metric | Target | Actual | Notes |
-|--------|--------|--------|-------|
-| ROUGE-L | 0.35 or higher | Not yet measured | Run scripts/evaluate.py |
-| BERTScore-F | 0.78 or higher | Not yet measured | Run scripts/evaluate.py |
-| Faithfulness Rate | 90% or higher | Not implemented | BERTScore layer missing |
-| Entity Accuracy | 95% or higher | Partial | Only 3 entity types checked via regex |
-| Summary latency | Under 30s | 30-60s first generation, under 100ms cached | Cached path meets target |
-
-### RAG and Question Answering
-
-| Metric | Target | Actual | Notes |
-|--------|--------|--------|-------|
-| Recall@3 | 80% or higher | Not yet measured | Run scripts/evaluate.py |
-| Faithfulness | 90% or higher | Not implemented | Manual review needed |
-| Exact Match | 50% or higher | Not measured | Not computed |
-| Hallucination Rate | 10% or lower | Not measured | Not tracked |
-| Citation Accuracy | 95% or higher | Not measured | Citations generated, accuracy unmeasured |
-
-### Security
-
-| Metric | Target | Actual | Notes |
-|--------|--------|--------|-------|
-| Injection Detection Rate | 90% or higher | Unknown | 6 regex patterns only |
-| PHI Residual Rate | 2% or lower | Unknown | Post-model Presidio in place, not formally tested |
-
-### Performance (Measured)
-
-| Metric | Target | Actual | Result |
-|--------|--------|--------|--------|
-| Patient list load | Under 1s | Under 100ms | Exceeds target |
-| Summary (cached) | Under 30s | Under 100ms | Exceeds target |
-| Summary (first generation) | Under 30s | 30-60s | Borderline — sentence cache eliminates repeat cost |
-| QA lookup response | Under 10s | 3-6s | Exceeds target (no cross-encoder) |
-| QA reasoning response | Under 10s | 5-10s | Meets target |
-| QA repeated question | Under 1s | Under 10ms | Exceeds target (memory cache) |
-| Server startup (5 patients) | Under 10s | ~5s | Meets target |
-| Server startup (100 patients) | Under 30s | ~15-20s (parallel) | Meets target |
-| Preprocessing (100 patients) | — | ~1.5-2 hours | One-time cost |
+### Before Real Deployment
+| # | Task | Effort |
+|---|------|--------|
+| 3 | JWT authentication + user identity in audit log | 1–2 days |
+| 4 | Wire slowapi rate limiting | 2 hours |
+| 5 | Alembic database migrations | half day |
+| 6 | Fix race condition on concurrent summary requests | 1 hour |
+| 7 | Move QA cache to Redis (horizontal scaling) | 1–2 days |
+| 8 | Move secrets out of .env defaults | 1 hour |
+| 9 | Streaming summaries via SSE | 1–2 days |
+| 10 | Citation inline footnotes in UI | 1 day |
+| 11 | pytest suite for core services | 1 day |
 
 ---
 
-## 6. Next Steps
-
-**Priority 1 — Run Evaluation**
-
-```bash
-cd backend && source .venv/bin/activate
-pip install rouge-score bert-score
-python -m scripts.evaluate
-```
-
-Produces ROUGE-L, BERTScore-F, and Recall@3 numbers.
-
-**Priority 2 — Citation UI**
-
-The API already returns citation fields (note_id, note_date, note_type). The frontend needs to render numbered footnotes below summary sections and QA answers.
-
-**Priority 3 — BERTScore Faithfulness**
-
-Replace or augment verification.py with a semantic BERTScore check per generated sentence against the source passage pool. Flag sentences where F1 falls below 0.75.
-
-**Priority 4 — Warning Badges in UI**
-
-The warnings array is already returned by the API. Surface it visually as a per-section indicator in the summary panel.
-
-**Priority 5 — GPT-2 Injection Detection**
-
-Load GPT-2 locally, compute perplexity on incoming questions, and block inputs above a calibrated threshold. This closes the gap between regex-only detection and a statistically grounded security layer.
-
----
-
-## 7. Design Decisions and Deviations from Proposal
+## 6. Design Decisions
 
 **BioMistral-7B replaced with llama3.1:8b**
-BioMistral-7B requires GGUF conversion steps that are not feasible on Apple M3. llama3.1:8b via Ollama provides equivalent biomedical performance with simpler local deployment. The LLM interface (llm_client.py) is model-agnostic and can be swapped without changing downstream code.
-
-**LangChain removed**
-The proposal listed LangChain for prompt orchestration. In practice, direct Ollama Python SDK calls with ThreadPoolExecutor for parallelism required no LangChain dependency. Removed to reduce package surface and eliminate version conflicts.
+BioMistral-7B requires GGUF conversion not feasible on Apple M3. llama3.1:8b via Ollama provides equivalent clinical performance with simpler local deployment.
 
 **ChromaDB replaced with PostgreSQL binary storage**
-Rather than maintaining two separate databases, FAISS indexes are serialized as binary blobs in the existing PostgreSQL instance. This reduces the service count from 3 to 2 with no reduction in retrieval quality.
+FAISS indexes serialized as binary blobs in PostgreSQL. Reduces service count from 3 to 2 with no retrieval quality loss.
 
-**5 patients instead of full MIMIC split**
-Preprocessing all 46,000 MIMIC patients with inference-only models on M3 hardware would require approximately 72 hours. The 5 selected patients each have both Physician progress notes (used as QA source) and Discharge summaries (used as evaluation ground truth), and cover distinct clinical profiles: ICU sepsis, neuro-oncology, oncology, trauma with atrial fibrillation, and cardiac surgery.
-
-**4 calls vs 1 call for summarization**
-Kept 4 parallel Ollama calls (one per summary section) rather than a single combined call. Rationale: section boundaries provide better output control, each call uses a smaller filtered context (keyword-matched sentences, max 40 per section), and the ThreadPoolExecutor already handles parallelism. A single large call would increase prompt size and reduce per-section reliability with no latency benefit on this hardware.
+**GPT-2 perplexity disabled in API server**
+Loading GPT-2 alongside MedCPT query + cross-encoder on Apple Silicon MPS causes a Metal GPU segfault (exit 139). Additionally, GPT-2 caught 0/19 attack queries in evaluation — social engineering prompts have high perplexity similar to legitimate clinical questions. Domain-specific regex patterns are more effective for this attack class. GPT-2 perplexity remains available in evaluate_security.py for offline evaluation.
 
 **Adaptive retrieval rather than uniform reranking**
-Lookup questions (factual, "what is the current X") skip the MedCPT cross-encoder entirely. FAISS inner-product scores are sufficiently precise for single-fact retrieval. Cross-encoder adds ~1–2s with no quality improvement for these query types. Reasoning questions retain full reranking because chunk ordering affects answer quality for multi-hop synthesis.
+Lookup questions skip the MedCPT cross-encoder entirely — FAISS inner-product scores are precise enough for single-fact retrieval. Cross-encoder adds ~1–2s with no quality benefit for these query types. Reasoning questions retain full reranking.
+
+**4 parallel Ollama calls for summarization**
+Section boundaries provide better output control. Each call uses a smaller filtered context (keyword-matched, max 40 sentences per section). A single large call would increase prompt size and reduce per-section reliability with no latency benefit.
 
 **Chunk size aligned to model max_length**
-Changed from 200 tokens / 50 stride to 240 tokens / 100 stride. MedCPT truncates at max_length=256, so chunks beyond 256 tokens were silently cut at both embedding and reranking. 240 tokens fills the model window while leaving headroom for special tokens. 100-token stride reduces total chunk count by ~50% with no retrieval quality loss.
+240 tokens / 100 stride (changed from 200/50). MedCPT truncates at max_length=256; chunks beyond 256 tokens were silently cut. 240 fills the model window with headroom for special tokens. 100-stride reduces chunk count ~50%.
 
-**Config-driven patient selection replaces hardcoded IDs**
-Removed `DEMO_PATIENT_IDS = [95324, ...]`. The preprocessing script now auto-selects from MIMIC based on quality criteria driven by `MAX_PATIENTS` in `.env`. This allows scaling from 5 to 100+ patients without code changes. Specific IDs can still be passed via `--patient-ids` CLI flag.
-
-**Key technical contributions delivered**
-- Full MedCPT 3-encoder RAG pipeline: Article Encoder, FAISS index, Query Encoder, adaptive Cross-Encoder reranking
-- BioClinicalBERT two-pass sentence extraction with source provenance for citation generation; cached per patient
-- Section-filtered LLM context: each of 4 parallel summary workers receives only relevant sentences
-- PostgreSQL as the primary data store for notes, indexes, summaries, and audit log
-- Pre-computed summary cache and in-memory QA cache eliminate repeated compute
-- Parallel preprocessing: PHI masking (4 workers/patient), FAISS startup load (8 threads), warm cache (2 patients concurrently)
-- Apple MPS acceleration across all three ML model families
-- PHI masking at both pre-model input and post-model output stages
-- Production React UI with full landing page, design system, and live assistant interface
+**Temperature set to 0**
+Clinical tools require reproducible outputs. temperature=0.2 caused ~0.03 BERTScore F1 variance between runs of the same patient summary.

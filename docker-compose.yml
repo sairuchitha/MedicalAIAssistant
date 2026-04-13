@@ -13,6 +13,11 @@ version: "3.9"
 #
 # Full stack in Docker (optional, for deployment testing):
 #   docker-compose up --build
+#
+# Notes:
+#   - Ollama must run on the host (Docker cannot access Metal/MPS on Apple Silicon)
+#   - KMP_DUPLICATE_LIB_OK suppresses OpenMP duplicate-lib warning from FAISS + PyTorch
+#   - Data volume is named vision_ai_pg — do not rename or preprocessing data will be lost
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -26,7 +31,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - medmind_pg:/var/lib/postgresql/data
+      - vision_ai_pg:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d vision_ai"]
       interval: 5s
@@ -43,6 +48,7 @@ services:
       POSTGRES_HOST: postgres                         # Docker service name
       OLLAMA_HOST: http://host.docker.internal:11434  # Ollama on Mac host
       TOKENIZERS_PARALLELISM: "false"                 # avoid fork/deadlock warning
+      KMP_DUPLICATE_LIB_OK: "TRUE"                   # suppress OpenMP duplicate-lib warning (FAISS + PyTorch)
     ports:
       - "8000:8000"
     volumes:
@@ -64,4 +70,4 @@ services:
       - backend
 
 volumes:
-  medmind_pg:
+  vision_ai_pg:

@@ -2,17 +2,23 @@ from app.config import settings
 from app.services.llm_client import generate_with_llm
 
 LOOKUP_KEYWORDS = ["last", "current", "most recent", "what is", "when was", "what are"]
-REASONING_KEYWORDS = ["trend", "over time", "history", "compare", "progression", "worsening", "changing"]
+REASONING_KEYWORDS = ["trend", "over time", "history", "compare", "progression", "worsening", "changing", "evolv", "fluctuat"]
 
 
 def classify_question(question: str) -> str:
+    """Classify question as lookup (single-fact) or reasoning (multi-hop/trend).
+
+    Reasoning keywords are checked first because they are more specific —
+    a question like "What is the trend of X" contains both "what is" (lookup)
+    and "trend" (reasoning). Reasoning should win in that case.
+    """
     q = question.lower()
-    for kw in LOOKUP_KEYWORDS:
-        if kw in q:
-            return "lookup"
     for kw in REASONING_KEYWORDS:
         if kw in q:
             return "reasoning"
+    for kw in LOOKUP_KEYWORDS:
+        if kw in q:
+            return "lookup"
     return "reasoning"
 
 
