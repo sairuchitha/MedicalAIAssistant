@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     INDEX_DIR: str = "data/processed/indexes"
     CHROMA_DIR: str = "data/processed/indexes/chroma"
 
-    MAX_PATIENTS: int = 5
+    MAX_PATIENTS: int = 105
     MAX_NOTES_PER_PATIENT: int = 300
     MIN_NOTE_WORDS: int = 100
 

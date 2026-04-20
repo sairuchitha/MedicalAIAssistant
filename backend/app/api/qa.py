@@ -9,7 +9,7 @@ from app.services.qa_service import answer_question, classify_question
 # security MUST be imported before retriever: GPT-2 (CPU) loads at security import
 # time and must be in memory before MedCPT models load on MPS (import order fix for
 # Apple Silicon Metal segfault — exit 139 when load order is reversed)
-from app.services.security import check_indirect_injection, check_prompt_injection
+from app.services.security import check_indirect_injection, check_prompt_injection, detect_suspicious_intent, validate_output
 from app.services.retriever import retrieve
 from app.services.runtime_store import get_cached_qa, get_patient_index, set_cached_qa
 
@@ -19,6 +19,13 @@ router = APIRouter()
 @router.post("/qa")
 def ask_question(req: QARequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     blocked, block_details = check_prompt_injection(req.question)
+
+    intent_flag, intent_reason = detect_suspicious_intent(req.question)
+
+    if intent_flag:
+        block_details["intent_flag"] = intent_reason
+        blocked = True
+
     if blocked:
         background_tasks.add_task(
             log_event,
@@ -38,7 +45,6 @@ def ask_question(req: QARequest, background_tasks: BackgroundTasks, db: Session 
         return cached_result
 
     # Classify once — reused by both retrieve() and answer_question()
-    # so we never run the keyword classifier twice per request
     qtype = classify_question(req.question)
 
     index, chunk_meta = get_patient_index(req.patient_id)
@@ -53,6 +59,21 @@ def ask_question(req: QARequest, background_tasks: BackgroundTasks, db: Session 
         raise HTTPException(status_code=400, detail="Query not allowed.")
 
     result = answer_question(req.question, retrieved, question_type=qtype)
+
+    is_safe, reason = validate_output(result["answer"])
+    if not is_safe:
+        background_tasks.add_task(
+            log_event,
+            db,
+            event_type="blocked_output",
+            patient_id=req.patient_id,
+            payload={"reason": reason},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Response blocked due to safety policy."
+        )
+
     result["answer"] = mask_phi(result["answer"])
 
     # ── Store in memory cache for future identical questions ───────────────────

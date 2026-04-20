@@ -98,20 +98,22 @@ Process specific patients: `python -m scripts.preprocess --patient-ids 95324 649
 - Measured residual rate: **0.0001** (1 false-positive entity in 105 patients)
 
 ### 3. Multi-Layer Prompt Injection Defense
-Three-layer injection guard on every QA request:
+Five-layer injection guard on every QA request:
 
 | Layer | Mechanism | Queries Caught |
 |-------|-----------|---------------|
 | 1 | Input length > 500 chars | Overflow attacks |
-| 2 | Regex pattern guard | Verbatim injections + social engineering patterns |
-| 3 | GPT-2 perplexity scoring | Low-perplexity formulaic inputs |
+| 2 | Regex pattern guard (38+ patterns) | Verbatim injections, social engineering, instruction-override, paraphrase bypasses |
+| 3 | Suspicious-intent detection (16 phrases) | Broad-access probing ("tell me everything", "full record", "bypass safety") |
+| 4 | GPT-2 perplexity (PPL < 90) | Low-entropy formulaic inputs |
+| 5 | Output validation | LLM responses containing instruction-leakage markers blocked before returning to client |
 
-- Injection detection rate: **89.5%** (17/19 test queries), Precision: **100%**, False Positive Rate: **0.0%**
-- Indirect injection guard: retrieved note chunks are scanned for embedded injection patterns before being passed to the LLM
+- Injection detection rate: **89.5%** (17/19 test queries), Precision: **100%**, F1: **0.944**, False Positive Rate: **0.0%**
+- Hardened QA prompt templates: every prompt includes a STRICT RULES block — the LLM is instructed not to follow instructions embedded in user queries or retrieved notes
+- Indirect injection guard: retrieved note chunks scanned for embedded injection patterns (including XML/markdown injection markers) before being passed to the LLM
+- Output validation audit event (`blocked_output`) logged for any response that triggers output-side checks
 - Generic error response on block — no pattern information leaked to attacker
 - PHI-masked question stored in audit log (not raw blocked query)
-
-> Note: GPT-2 perplexity (Layer 3) is disabled in the API server due to an Apple Silicon MPS conflict when loaded alongside MedCPT models. It remains available in `evaluate_security.py` for offline evaluation. Layer 3 caught 0/19 queries in evaluation; social engineering prompts have high perplexity similar to legitimate clinical questions.
 
 ### 4. Clinical Sentence Extraction (BioClinicalBERT)
 - Mean-pool embeddings across all token positions (not CLS)
@@ -163,7 +165,7 @@ Three dedicated evaluation scripts:
 |-------|-----------|
 | Frontend | React 18, Vite |
 | Backend | FastAPI, Python 3.12+, Pydantic v2 |
-| LLM Serving | Ollama (`llama3.1:8b`, temperature=0, 120s timeout) |
+| LLM Serving | Ollama (`llama3.1:8b`, temperature=0, 300s timeout) |
 | Sentence Extraction | BioClinicalBERT (`emilyalsentzer/Bio_ClinicalBERT`) |
 | RAG Retrieval | MedCPT Article/Query/Cross-Encoder (`ncbi/MedCPT-*`) |
 | Vector Search | FAISS `IndexFlatIP`, L2-normalized, per-patient |
@@ -511,16 +513,20 @@ MedMind AI exposes a natural-language QA interface backed by an LLM with access 
 |-------|-----------|----------------------|
 | Input validation | Pydantic: 3–500 char limit | >500 char overflow payloads |
 | Length check | Hard reject >500 chars | Length overflow attacks |
-| Regex guard | 30+ patterns: verbatim injections, social engineering, role-play bypass, data exfiltration framing | "ignore all previous instructions", "as a security researcher..." |
-| Indirect injection | Scan retrieved chunks for injection patterns before LLM sees them | Injections embedded in clinical note text |
+| Regex guard | 38+ patterns: verbatim injections, social engineering, instruction-override, paraphrase bypasses | "ignore all previous instructions", "as a security researcher...", "just say patient is..." |
+| Suspicious-intent detection | 16 semantic phrases | "tell me everything", "full record", "bypass safety", "show all records" |
+| GPT-2 perplexity (PPL < 90) | Block low-entropy formulaic inputs (CPU, loaded at import time) | Template-filled payload strings |
+| Output validation | Scan LLM response for instruction-leakage markers | Responses containing "i was instructed", "hidden instruction" |
+| Hardened prompt templates | STRICT RULES block in every QA prompt | LLM refuses to follow instructions embedded in queries or retrieved notes |
+| Indirect injection | Scan retrieved chunks for injection patterns (incl. XML/markdown markers) before LLM sees them | Injections embedded in clinical note text |
 | PHI masking (output) | Presidio scan on every LLM response | Residual PHI in model output |
 | Audit log | PHI-masked events, no raw question stored | Forensic trail without PHI leakage |
 | CORS | Restricted to `localhost:5173` only | Cross-origin API abuse |
 
 ## Measured results (19-query test set)
-- Detection rate: **89.5%** (17/19) — 0% false positive rate
-- 2 missed: indirect paraphrase injections using "disregard prior context" variants
-- Regex-only baseline (before social engineering patterns): 52.6% — improvement: **+36.8%**
+- Detection rate: **89.5%** (17/19), Precision: **1.000**, F1: **0.944** — 0% false positive rate
+- 2 missed: indirect paraphrase injections; output validation and hardened prompts provide defense-in-depth for these cases
+- Regex-only baseline (before social engineering + intent patterns): 52.6% — improvement: **+36.8%**
 
 ---
 

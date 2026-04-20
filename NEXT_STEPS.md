@@ -31,7 +31,7 @@
 
 - RAG pipeline: MedCPT 3-encoder, FAISS, adaptive cross-encoder reranking
 - PHI masking: double-layer Presidio, residual rate 0.0001
-- **Injection detection: 3-layer defense fully restored** — input length + regex (30+ patterns including social engineering) + GPT-2 perplexity (CPU, loads before MedCPT on MPS)
+- **Injection detection: 5-layer defense** — input length + regex (38+ patterns) + suspicious-intent detection + GPT-2 perplexity (CPU) + output validation; hardened prompt templates
 - Question classifier: reasoning keywords checked before lookup keywords (bug fixed)
 - Caching: sub-100ms cached paths, parallel 8-thread startup
 - LLM: temperature=0 (deterministic), 120s timeout
@@ -51,8 +51,8 @@ The project description specifies **perplexity-based prompt screening as the pri
 | Reasoning RAG (multi-note) | ✅ Implemented | FAISS top-10 + MedCPT cross-encoder, ~30–90s |
 | PHI masking — pre-model | ✅ Implemented | Presidio before any model sees text |
 | PHI masking — post-model | ✅ Implemented | Presidio on all LLM outputs |
-| **Perplexity-based injection screening** | ✅ **Restored** | GPT-2 CPU, import-order fix eliminates MPS segfault |
-| Prompt injection defense | ✅ Implemented | 3 layers: length + regex + GPT-2 perplexity |
+| **Perplexity-based injection screening** | ✅ **Implemented** | GPT-2 CPU (PPL < 90), loads at security.py import time before MedCPT on MPS |
+| Prompt injection defense | ✅ Implemented | 5 layers: length + regex (38+ patterns) + suspicious-intent + GPT-2 perplexity + output validation; hardened prompt templates |
 
 **GPT-2 perplexity restored:** The segfault (exit 139) was caused by lazy-loading GPT-2 after MedCPT models were already on MPS. Fix: GPT-2 now loads eagerly at `security.py` import time on CPU, and `qa.py` imports `security` before `retriever` — so GPT-2 is always in memory before MedCPT touches the MPS device.
 
@@ -91,9 +91,8 @@ requires manual drop-and-recreate or ad-hoc SQL.
 ## High Priority — Degrades Reliability
 
 ### 6. GPT-2 perplexity threshold needs calibration
-Current threshold: PPL < 20.0 blocks inputs. Social engineering prompts have PPL 54–127
-(similar to clinical questions). The threshold catches only formulaic, low-entropy injections.
-Layer 3 caught 0/19 attack queries in evaluation.
+Current threshold: PPL < 90 blocks inputs. Social engineering prompts have PPL 54–127
+(similar to clinical questions, PPL 23–52). Layer 4 caught 0/19 attack queries in evaluation.
 **Fix:** Calibrate threshold on a labeled dataset, or replace with a fine-tuned classifier
 for clinical injection detection. Effort: 1–2 days.
 
@@ -178,11 +177,10 @@ Verification warnings are returned but displayed as a flat list (or not at all i
 not attached to the section that triggered them.
 **Fix:** Parse warning section name and render badge inline per section. Effort: half day.
 
-### 22. Two paraphrase injections still bypass detection
-"Please disregard any prior context…" and "For this task only, forget your previous
-instructions…" pass all three layers (regex miss + high perplexity).
-**Fix:** Add `r"disregard.{0,20}(prior|previous).{0,20}(context|instruction)"` and
-`r"for this task only"` to `BLOCK_PATTERNS` in security.py. Effort: 10 min.
+### 22. Two indirect paraphrase injections still bypass input filters
+Highly indirect rephrasing ("please disregard any prior context…") passes regex, suspicious-intent, and perplexity layers.
+**Partial mitigation:** Output validation (Layer 5) and hardened prompt templates now provide defense-in-depth — even if an injection reaches the LLM, output-side checks and STRICT RULES block limit impact.
+**Remaining fix:** Add 2 more regex patterns for remaining indirect-rephrase variants. Effort: 10 min.
 
 ---
 
@@ -191,10 +189,12 @@ instructions…" pass all three layers (regex miss + high perplexity).
 ### Before any demo or submission
 | # | Task | File | Effort |
 |---|------|------|--------|
-| 1 | Add 2 missing paraphrase injection patterns | `app/services/security.py` | 10 min |
+| 1 | Add 2 remaining indirect-paraphrase injection patterns | `app/services/security.py` | 10 min |
 | 2 | Surface QA warnings in UI | `frontend/src/components/QAChat.jsx` | 30 min |
 | 3 | Add summary `generated_at` timestamp to response | `app/api/summary.py` | 20 min |
 | 4 | Remove `chromadb` from requirements | `requirements.txt` | 2 min |
+| 5 | Remove test comment payload from top of security.py | `app/services/security.py` | 2 min |
+| 6 | Remove commented-out duplicate router import in main.py | `app/main.py` | 2 min |
 
 ### Before a real deployment
 | # | Task | Effort |

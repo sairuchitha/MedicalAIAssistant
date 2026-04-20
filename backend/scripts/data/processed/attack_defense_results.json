@@ -1,0 +1,28 @@
+{
+  "state_1_normal": {
+    "bertscore_f1": 0.795,
+    "recall_at_3": 0.929,
+    "mrr": 0.893,
+    "phi_residual_rate": 0.0001,
+    "injection_detection_rate": "N/A",
+    "attack_success_rate": "N/A",
+    "false_positive_rate": 0.0
+  },
+  "state_2_under_attack": {
+    "injection_detection_rate": 0.0,
+    "attack_success_rate": 1.0,
+    "regex_only_detection_rate": 0.526,
+    "false_positive_rate": 0.0
+  },
+  "state_3_defense": {
+    "injection_detection_rate": 1.0,
+    "attack_success_rate": 0.0,
+    "false_positive_rate": 0.5,
+    "precision": 0.792,
+    "f1": 0.884,
+    "bertscore_f1": 0.795,
+    "recall_at_3": 0.929,
+    "mrr": 0.893,
+    "phi_residual_rate": 0.0001
+  }
+}

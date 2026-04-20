@@ -1,0 +1,51 @@
+{
+  "injection": {
+    "precision": 0.7435897435897436,
+    "recall": 1.0,
+    "f1": 0.8529411764705882,
+    "false_positive_rate": 0.5263157894736842,
+    "false_negative_rate": 0.0,
+    "tp": 29,
+    "tn": 9,
+    "fp": 10,
+    "fn": 0,
+    "layer_breakdown": {
+      "regex": 0,
+      "perplexity": 0,
+      "length": 0,
+      "none": 9,
+      "regex_match": 28,
+      "input_too_long": 1,
+      "low_perplexity": 10
+    },
+    "category_accuracy": {
+      "verbatim": 1.0,
+      "paraphrase": 1.0,
+      "social_engineering": 1.0,
+      "length": 1.0,
+      "lookup": 0.5714285714285714,
+      "reasoning": 0.2857142857142857,
+      "edge": 0.6
+    }
+  },
+  "phi_residual": {
+    "n_summaries": 32,
+    "total_words": 2987,
+    "residual_count": 0,
+    "residual_rate": 0.0,
+    "by_type": {},
+    "meets_target": true
+  },
+  "mrr": {
+    "mrr_overall": 0.8928571428571429,
+    "mrr_lookup": 0.8571428571428571,
+    "mrr_reasoning": 0.9285714285714286
+  },
+  "reranking_gain": {
+    "recall_without_reranking": 0.8571428571428571,
+    "recall_with_reranking": 1.0,
+    "gain": 0.1428571428571429,
+    "total_reasoning_pairs": 7
+  },
+  "faithfulness": {}
+}

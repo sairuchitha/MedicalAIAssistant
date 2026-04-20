@@ -1,7 +1,7 @@
 import ollama
 from app.config import settings
 
-_client = ollama.Client(timeout=120)
+_client = ollama.Client(timeout=300)
 
 
 def generate_with_llm(prompt: str) -> str:

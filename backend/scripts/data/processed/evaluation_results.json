@@ -1,0 +1,25 @@
+{
+  "summarization": {},
+  "qa": {
+    "recall_at_3_lookup": 0.8571428571428571,
+    "recall_at_3_reasoning": 1.0,
+    "recall_at_3_overall": 0.9285714285714286
+  },
+  "qa_detail": {
+    "recall_at_3_lookup": {
+      "score": 0.8571428571428571,
+      "hits": 6,
+      "total": 7
+    },
+    "recall_at_3_reasoning": {
+      "score": 1.0,
+      "hits": 7,
+      "total": 7
+    },
+    "recall_at_3_overall": {
+      "score": 0.9285714285714286,
+      "hits": 13,
+      "total": 14
+    }
+  }
+}

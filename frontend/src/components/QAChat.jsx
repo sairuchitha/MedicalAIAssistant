@@ -35,6 +35,9 @@ export default function QAChat({ patientId }) {
     setLoading(true);
     setError("");
     setBlocked(false);
+    setAnswer("");
+    setCitations([]);
+    setQuestionType("");
     try {
       const data = await askQuestion(Number(patientId), question);
       setAnswer(data.answer);
@@ -47,8 +50,6 @@ export default function QAChat({ patientId }) {
       } else {
         setError(e.message);
       }
-      setAnswer("");
-      setCitations([]);
     } finally {
       setLoading(false);
     }
@@ -83,7 +84,7 @@ export default function QAChat({ patientId }) {
       )}
       {!blocked && error && <p className="error">{error}</p>}
 
-      {answer && (
+      {answer && !error && (
         <>
           <div className="answer-box">
             <div className="pill">{questionType}</div>

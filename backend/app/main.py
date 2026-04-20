@@ -3,9 +3,9 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.api.patients import router as patients_router
 from app.api.qa import router as qa_router
+from app.api.patients import router as patients_router
+#from app.api.qa import router as qa_router
 from app.api.summary import router as summary_router
 from app.config import settings
 from app.db.postgres import init_db
